@@ -65,9 +65,12 @@ class AudioWaveformsPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             Constants.pauseRecording -> record.pause(result)
 
             Constants.resumeRecording -> record.resume(result)
-            Constants.checkPermission -> audioRecorder.checkPermission(
-                result, activity, result::success
-            )
+            Constants.checkPermission -> {
+                val resolvedActivity = getActivity()
+                audioRecorder.checkPermission(
+                    result, resolvedActivity, result::success
+                )
+            }
 
             Constants.preparePlayer -> {
                 val audioPath = call.argument(Constants.path) as String?
@@ -227,7 +230,8 @@ class AudioWaveformsPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         result: Result, recorderSettings: RecorderSettings
     ) {
         if (recorderSettings.path == null) {
-            val outputDir = activity?.cacheDir
+            val context = getContext()
+            val outputDir = context.cacheDir
             val outputFile: File?
             val dateTimeInstance = SimpleDateFormat(Constants.fileNameFormat, Locale.US)
             val currentDate = dateTimeInstance.format(Date())
@@ -290,8 +294,7 @@ class AudioWaveformsPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activity = binding.activity
         pluginBinding = binding
-        pluginBinding!!.addRequestPermissionsResultListener(this.audioRecorder)
-
+        binding.addRequestPermissionsResultListener(this.audioRecorder)
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
@@ -308,9 +311,16 @@ class AudioWaveformsPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         audioPlayers.clear()
         extractors.clear()
         activity = null
-        if (pluginBinding != null) {
-            pluginBinding!!.removeRequestPermissionsResultListener(this.audioRecorder)
-        }
+        pluginBinding?.removeRequestPermissionsResultListener(this.audioRecorder)
+        pluginBinding = null
+    }
+
+    private fun getContext(): Context {
+        return activity ?: applicationContext
+    }
+
+    private fun getActivity(): Activity? {
+        return activity
     }
 
     private fun stopAllPlayer(result: Result) {

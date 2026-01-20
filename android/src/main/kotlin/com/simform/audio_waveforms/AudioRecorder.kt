@@ -3,6 +3,7 @@ package com.simform.audio_waveforms
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -15,6 +16,7 @@ import android.os.Looper
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.simform.audio_waveforms.Constants.LOG_TAG
 import com.simform.audio_waveforms.encoders.*
 import io.flutter.plugin.common.MethodChannel
@@ -57,8 +59,11 @@ class AudioRecorder : PluginRegistry.RequestPermissionsResultListener {
         }
     }
 
-    private fun isPermissionGranted(activity: Activity?): Boolean {
-        val result = ActivityCompat.checkSelfPermission(activity!!, permissions[0])
+    private fun isPermissionGranted(context: Context?): Boolean {
+        if (context == null) {
+            return false
+        }
+        val result = ContextCompat.checkSelfPermission(context, permissions[0])
         return result == PackageManager.PERMISSION_GRANTED
     }
 
@@ -66,10 +71,26 @@ class AudioRecorder : PluginRegistry.RequestPermissionsResultListener {
         result: Result, activity: Activity?, successCallback: RequestPermissionsSuccessCallback
     ) {
         this.successCallback = successCallback
+        
+        if (activity == null) {
+            result.error(
+                LOG_TAG,
+                "Activity not available",
+                "Cannot check permissions without an Activity context. Ensure the plugin is attached to an Activity or Fragment."
+            )
+            return
+        }
+        
         if (!isPermissionGranted(activity)) {
-            activity?.let {
+            try {
                 ActivityCompat.requestPermissions(
-                    it, permissions, Constants.RECORD_AUDIO_REQUEST_CODE
+                    activity, permissions, Constants.RECORD_AUDIO_REQUEST_CODE
+                )
+            } catch (e: Exception) {
+                result.error(
+                    LOG_TAG,
+                    "Failed to request permissions",
+                    "Error requesting permissions: ${e.message}"
                 )
             }
         } else {
