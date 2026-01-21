@@ -69,9 +69,23 @@ class AudioWaveformsInterface {
 
   ///platform call to check microphone permission
   Future<bool> checkPermission() async {
-    var hasPermission =
-        await _methodChannel.invokeMethod(Constants.checkPermission);
-    return hasPermission ?? false;
+    try {
+      var hasPermission =
+          await _methodChannel.invokeMethod(Constants.checkPermission);
+      return hasPermission ?? false;
+    } catch (e) {
+      if (e.toString().contains('Activity not available')) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        try {
+          var hasPermission =
+              await _methodChannel.invokeMethod(Constants.checkPermission);
+          return hasPermission ?? false;
+        } catch (_) {
+          return false;
+        }
+      }
+      return false;
+    }
   }
 
   ///platform call to prepare player

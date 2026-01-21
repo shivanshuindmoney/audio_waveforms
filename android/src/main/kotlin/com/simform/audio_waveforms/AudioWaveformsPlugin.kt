@@ -320,7 +320,24 @@ class AudioWaveformsPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     }
 
     private fun getActivity(): Activity? {
-        return activity
+        if (activity != null) {
+            return activity
+        }
+        
+        var context: Context? = applicationContext
+        while (context != null) {
+            if (context is Activity) {
+                activity = context
+                return context
+            }
+            context = if (context is android.content.ContextWrapper) {
+                (context as android.content.ContextWrapper).baseContext
+            } else {
+                null
+            }
+        }
+        
+        return null
     }
 
     private fun stopAllPlayer(result: Result) {
