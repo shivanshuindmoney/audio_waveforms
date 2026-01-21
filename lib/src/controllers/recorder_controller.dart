@@ -164,43 +164,37 @@ class RecorderController extends ChangeNotifier {
     RecorderSettings recorderSettings = const RecorderSettings(),
   }) async {
     if (!_recorderState.isRecording) {
-      await checkPermission();
-      if (_hasPermission) {
-        if (Platform.isAndroid && _recorderState.isStopped) {
-          await _initRecorder(
-            path: path,
-            recorderSettings: recorderSettings,
-          );
+      if (Platform.isAndroid && _recorderState.isStopped) {
+        await _initRecorder(
+          path: path,
+          recorderSettings: recorderSettings,
+        );
+      }
+      if (_recorderState.isPaused) {
+        _isRecording = await AudioWaveformsInterface.instance.resume();
+        if (_isRecording) {
+          _setRecorderState(RecorderState.recording);
+        } else {
+          throw "Failed to resume recording";
         }
-        if (_recorderState.isPaused) {
-          _isRecording = await AudioWaveformsInterface.instance.resume();
-          if (_isRecording) {
-            _setRecorderState(RecorderState.recording);
-          } else {
-            throw "Failed to resume recording";
-          }
-          notifyListeners();
-          return;
+        notifyListeners();
+        return;
+      }
+      // iOS and macOS don't require initialization, set state directly
+      if (isIosOrMacOS) {
+        _setRecorderState(RecorderState.initialized);
+      }
+      if (_recorderState.isInitialized) {
+        _isRecording = await AudioWaveformsInterface.instance.record(
+          recorderSetting: recorderSettings,
+          path: path,
+          overrideAudioSession: overrideAudioSession,
+        );
+        if (_isRecording) {
+          _setRecorderState(RecorderState.recording);
+        } else {
+          throw "Failed to start recording";
         }
-        // iOS and macOS don't require initialization, set state directly
-        if (isIosOrMacOS) {
-          _setRecorderState(RecorderState.initialized);
-        }
-        if (_recorderState.isInitialized) {
-          _isRecording = await AudioWaveformsInterface.instance.record(
-            recorderSetting: recorderSettings,
-            path: path,
-            overrideAudioSession: overrideAudioSession,
-          );
-          if (_isRecording) {
-            _setRecorderState(RecorderState.recording);
-          } else {
-            throw "Failed to start recording";
-          }
-          notifyListeners();
-        }
-      } else {
-        _setRecorderState(RecorderState.stopped);
         notifyListeners();
       }
     }

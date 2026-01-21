@@ -99,7 +99,6 @@ class AudioRecorder : PluginRegistry.RequestPermissionsResultListener {
     }
 
     @RequiresApi(Build.VERSION_CODES.M)
-    @SuppressLint("MissingPermission")
     fun initRecorder(
         recorderSettings: RecorderSettings, channel: MethodChannel, result: Result
     ) {
