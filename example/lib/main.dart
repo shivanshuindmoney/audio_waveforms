@@ -4,7 +4,6 @@ import 'package:audio_waveforms/audio_waveforms.dart';
 import 'package:audio_waveforms_example/chat_bubble.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 void main() => runApp(const MyApp());
@@ -31,14 +30,9 @@ class Home extends StatefulWidget {
 
 class _HomeState extends State<Home> {
   late final RecorderController recorderController;
-  final List<String> assetPaths = const [
-    'assets/audios/audio1.mp3',
-    'assets/audios/audio2.mp3',
-    'assets/audios/audio3.mp3',
-    'assets/audios/audio4.mp3',
-  ];
 
-  final paths = <String>[];
+  String? path;
+  String? musicFile;
   bool isRecording = false;
   bool isRecordingCompleted = false;
   bool isLoading = true;
@@ -47,28 +41,29 @@ class _HomeState extends State<Home> {
   @override
   void initState() {
     super.initState();
-    _init();
+    _getDir();
+    _initialiseControllers();
   }
 
-  Future<void> _init() async {
-    recorderController = RecorderController();
+  void _getDir() async {
     appDirectory = await getApplicationDocumentsDirectory();
-    for (final path in assetPaths) {
-      final fileName = path.split('/').last;
-      final file = File('${appDirectory.path}/$fileName');
-      final byteData = await rootBundle.load(path);
-      final bytes = byteData.buffer.asUint8List();
-      await file.writeAsBytes((bytes));
-      paths.add(file.path);
-    }
+    path = "${appDirectory.path}/recording.m4a";
     isLoading = false;
     setState(() {});
   }
 
+  void _initialiseControllers() {
+    recorderController = RecorderController()
+      ..androidEncoder = AndroidEncoder.aac
+      ..androidOutputFormat = AndroidOutputFormat.mpeg4
+      ..iosEncoder = IosEncoder.kAudioFormatMPEG4AAC
+      ..sampleRate = 44100;
+  }
+
   void _pickFile() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles();
-    if (result != null && result.files.isNotEmpty) {
-      paths.add(result.files.first.path!);
+    if (result != null) {
+      musicFile = result.files.single.path;
       setState(() {});
     } else {
       debugPrint("File not picked");
@@ -115,16 +110,29 @@ class _HomeState extends State<Home> {
                   const SizedBox(height: 20),
                   Expanded(
                     child: ListView.builder(
-                      itemCount: paths.length,
+                      itemCount: 4,
                       itemBuilder: (_, index) {
                         return WaveBubble(
-                          path: paths[index],
+                          index: index + 1,
                           isSender: index.isOdd,
                           width: MediaQuery.of(context).size.width / 2,
+                          appDirectory: appDirectory,
                         );
                       },
                     ),
                   ),
+                  if (isRecordingCompleted)
+                    WaveBubble(
+                      path: path,
+                      isSender: true,
+                      appDirectory: appDirectory,
+                    ),
+                  if (musicFile != null)
+                    WaveBubble(
+                      path: musicFile,
+                      isSender: true,
+                      appDirectory: appDirectory,
+                    ),
                   SafeArea(
                     child: Row(
                       children: [
@@ -207,20 +215,15 @@ class _HomeState extends State<Home> {
       if (isRecording) {
         recorderController.reset();
 
-        final path = await recorderController.stop(false);
+        path = await recorderController.stop(false);
 
         if (path != null) {
-          paths.add(path);
           isRecordingCompleted = true;
           debugPrint(path);
-          debugPrint("Recorded file size: ${File(path).lengthSync()}");
+          debugPrint("Recorded file size: ${File(path!).lengthSync()}");
         }
       } else {
-        final path = "${appDirectory.path}/recording.m4a";
-        await recorderController.record(
-          path: path, // Path is optional
-          recorderSettings: const RecorderSettings(),
-        );
+        await recorderController.record(path: path); // Path is optional
       }
     } catch (e) {
       debugPrint(e.toString());

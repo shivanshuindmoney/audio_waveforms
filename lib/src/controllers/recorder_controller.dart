@@ -1,33 +1,43 @@
 import 'dart:async';
 import 'dart:io' show Platform;
-import 'dart:typed_data';
+import 'dart:math' show max;
 
 import 'package:flutter/material.dart';
 
 import '/src/base/utils.dart';
 import '../base/constants.dart';
-import '../base/platform_streams.dart';
-import '../models/recorder_settings.dart';
 import 'player_controller.dart';
 
 // ignore_for_file: deprecated_member_use_from_same_package
 class RecorderController extends ChangeNotifier {
-  /// A class having controls for recording audio and other useful handlers.
-  RecorderController() {
-    if (!_platformStream.isInitialised) {
-      _platformStream.init();
-    }
-    _amplitudeStreamSubscription =
-        PlatformStreams.instance.onAmplitude.listen(_updateOnNewAmplitude);
-    _currentDurationStreamSubscription =
-        _platformStream.onCurrentDuration.listen((duration) {
-      _elapsedDuration = duration;
-    });
-  }
-
-  final _platformStream = PlatformStreams.instance;
-
   final List<double> _waveData = [];
+
+  /// At which rate waveform needs to be updated
+  Duration updateFrequency = const Duration(milliseconds: 100);
+
+  AndroidEncoder androidEncoder = AndroidEncoder.aac;
+
+  AndroidOutputFormat androidOutputFormat = AndroidOutputFormat.mpeg4;
+
+  IosEncoder iosEncoder = IosEncoder.kAudioFormatMPEG4AAC;
+
+  int sampleRate = 44100;
+
+  int? bitRate;
+
+  /// Db we get from native is too high so in Android it the value is
+  /// subtracted and in IOS value added.
+  @Deprecated(
+    '\nThis is legacy normalizationFactor which was removed'
+    ' in 1.0.0 release. Only use this if you are using legacy normalization',
+  )
+  double normalizationFactor = Platform.isAndroid ? 60 : 40;
+
+  /// Current maximum peak power for ios and peak amplitude android.
+  double _maxPeak = Platform.isIOS ? 1 : 32786.0;
+
+  /// Current min value.
+  double _currentMin = 0;
 
   /// Current list of scaled waves. For IOS, this list contains normalised
   /// peak power and for Android, this list contains normalised peak
@@ -50,6 +60,8 @@ class RecorderController extends ChangeNotifier {
   bool _shouldRefresh = true;
 
   bool get shouldRefresh => _shouldRefresh;
+
+  Timer? _timer;
 
   bool _hasPermission = false;
 
@@ -80,6 +92,8 @@ class RecorderController extends ChangeNotifier {
 
   bool _isDisposed = false;
 
+  bool _useLegacyNormalization = false;
+
   /// Provides currently recorded audio duration. Use [onCurrentDuration]
   /// stream to get latest events duration.
   Duration get elapsedDuration => _elapsedDuration;
@@ -94,11 +108,18 @@ class RecorderController extends ChangeNotifier {
 
   Duration _recordedDuration = Duration.zero;
 
+  Timer? _recorderTimer;
+
   final ValueNotifier<int> _currentScrolledDuration = ValueNotifier(0);
 
+  final StreamController<Duration> _currentDurationController =
+      StreamController.broadcast();
+
   /// A stream to get current duration of currently recording audio file.
-  /// Events are emitted as soon it is available from platform.
-  Stream<Duration> get onCurrentDuration => _platformStream.onCurrentDuration;
+  /// Events are emitted every 50 milliseconds which means current duration is
+  /// accurate to 50 milliseconds. To get Fully accurate duration use
+  /// [recordedDuration] after stopping the recording.
+  Stream<Duration> get onCurrentDuration => _currentDurationController.stream;
 
   final StreamController<RecorderState> _recorderStateController =
       StreamController.broadcast();
@@ -117,11 +138,13 @@ class RecorderController extends ChangeNotifier {
   Stream<Duration> get onRecordingEnded =>
       _recordedFileDurationController.stream;
 
-  /// A stream to get bytes while recording audio.
-  Stream<Uint8List> get onAudioChunks => _platformStream.onRecordedBytes;
-
-  StreamSubscription<double>? _amplitudeStreamSubscription;
-  StreamSubscription<Duration>? _currentDurationStreamSubscription;
+  /// A class having controls for recording audio and other useful handlers.
+  ///
+  /// Use [useLegacyNormalization] parameter to use normalization before
+  /// 1.0.0 release.
+  RecorderController({bool useLegacyNormalization = false}) {
+    _useLegacyNormalization = useLegacyNormalization;
+  }
 
   /// A ValueNotifier which provides current position of scrolled waveform with
   /// respect to [middle line].
@@ -161,53 +184,134 @@ class RecorderController extends ChangeNotifier {
   /// this function is called then it will re-initialise the recorder.
   Future<void> record({
     String? path,
-    RecorderSettings recorderSettings = const RecorderSettings(),
+    AndroidEncoder? androidEncoder,
+    AndroidOutputFormat? androidOutputFormat,
+    IosEncoder? iosEncoder,
+    int? sampleRate,
+    int? bitRate,
+    int? linearPCMBitDepth,
+    bool linearPCMIsBigEndian = false,
+    bool linearPCMIsFloat = false,
   }) async {
     if (!_recorderState.isRecording) {
-      if (Platform.isAndroid && _recorderState.isStopped) {
-        await _initRecorder(
-          path: path,
-          recorderSettings: recorderSettings,
-        );
-      }
-      if (_recorderState.isPaused) {
-        _isRecording = await AudioWaveformsInterface.instance.resume();
-        if (_isRecording) {
-          _setRecorderState(RecorderState.recording);
-        } else {
-          throw "Failed to resume recording";
+      if(Platform.isAndroid){
+        if (Platform.isAndroid && _recorderState.isStopped) {
+          await _initRecorder(
+            path: path,
+            androidEncoder: androidEncoder,
+            androidOutputFormat: androidOutputFormat,
+            sampleRate: sampleRate,
+            bitRate: bitRate,
+          );
         }
-        notifyListeners();
-        return;
-      }
-      // iOS and macOS don't require initialization, set state directly
-      if (isIosOrMacOS) {
-        _setRecorderState(RecorderState.initialized);
-      }
-      if (_recorderState.isInitialized) {
-        _isRecording = await AudioWaveformsInterface.instance.record(
-          recorderSetting: recorderSettings,
-          path: path,
-          overrideAudioSession: overrideAudioSession,
-        );
-        if (_isRecording) {
-          _setRecorderState(RecorderState.recording);
-        } else {
-          throw "Failed to start recording";
+        if (_recorderState.isPaused) {
+          _isRecording = await AudioWaveformsInterface.instance.resume();
+          if (_isRecording) {
+            _startTimer();
+            _setRecorderState(RecorderState.recording);
+          } else {
+            throw "Failed to resume recording";
+          }
+          notifyListeners();
+          return;
         }
-        notifyListeners();
+        if (Platform.isIOS) {
+          _setRecorderState(RecorderState.initialized);
+        }
+        if (_recorderState.isInitialized) {
+          _isRecording = await AudioWaveformsInterface.instance.record(
+            audioFormat: Platform.isIOS
+                ? iosEncoder?.index ?? this.iosEncoder.index
+                : androidEncoder?.index ?? this.androidEncoder.index,
+            sampleRate: sampleRate ?? this.sampleRate,
+            bitRate: bitRate ?? this.bitRate,
+            path: path,
+            useLegacyNormalization: _useLegacyNormalization,
+            overrideAudioSession: overrideAudioSession,
+            linearPCMBitDepth: linearPCMBitDepth,
+            linearPCMIsBigEndian: linearPCMIsBigEndian,
+            linearPCMIsFloat: linearPCMIsFloat,
+          );
+          if (_isRecording) {
+            _setRecorderState(RecorderState.recording);
+            _startTimer();
+          } else {
+            throw "Failed to start recording";
+          }
+          notifyListeners();
+        }
+      }else{
+        await checkPermission();
+        if (_hasPermission) {
+          if (Platform.isAndroid && _recorderState.isStopped) {
+            await _initRecorder(
+              path: path,
+              androidEncoder: androidEncoder,
+              androidOutputFormat: androidOutputFormat,
+              sampleRate: sampleRate,
+              bitRate: bitRate,
+            );
+          }
+          if (_recorderState.isPaused) {
+            _isRecording = await AudioWaveformsInterface.instance.resume();
+            if (_isRecording) {
+              _startTimer();
+              _setRecorderState(RecorderState.recording);
+            } else {
+              throw "Failed to resume recording";
+            }
+            notifyListeners();
+            return;
+          }
+          if (Platform.isIOS) {
+            _setRecorderState(RecorderState.initialized);
+          }
+          if (_recorderState.isInitialized) {
+            _isRecording = await AudioWaveformsInterface.instance.record(
+              audioFormat: Platform.isIOS
+                  ? iosEncoder?.index ?? this.iosEncoder.index
+                  : androidEncoder?.index ?? this.androidEncoder.index,
+              sampleRate: sampleRate ?? this.sampleRate,
+              bitRate: bitRate ?? this.bitRate,
+              path: path,
+              useLegacyNormalization: _useLegacyNormalization,
+              overrideAudioSession: overrideAudioSession,
+              linearPCMBitDepth: linearPCMBitDepth,
+              linearPCMIsBigEndian: linearPCMIsBigEndian,
+              linearPCMIsFloat: linearPCMIsFloat,
+            );
+            if (_isRecording) {
+              _setRecorderState(RecorderState.recording);
+              _startTimer();
+            } else {
+              throw "Failed to start recording";
+            }
+            notifyListeners();
+          }
+        } else {
+          _setRecorderState(RecorderState.stopped);
+          notifyListeners();
+        }
       }
+
     }
   }
 
   /// Initialises recorder for android platform.
   Future<void> _initRecorder({
     String? path,
-    required RecorderSettings recorderSettings,
+    AndroidEncoder? androidEncoder,
+    AndroidOutputFormat? androidOutputFormat,
+    int? sampleRate,
+    int? bitRate,
   }) async {
     final initialized = await AudioWaveformsInterface.instance.initRecorder(
       path: path,
-      recorderSettings: recorderSettings,
+      encoder: androidEncoder?.index ?? this.androidEncoder.index,
+      outputFormat:
+          androidOutputFormat?.index ?? this.androidOutputFormat.index,
+      sampleRate: sampleRate ?? this.sampleRate,
+      bitRate: bitRate ?? this.bitRate,
     );
     if (initialized) {
       _setRecorderState(RecorderState.initialized);
@@ -241,6 +345,8 @@ class RecorderController extends ChangeNotifier {
       if (_isRecording) {
         throw "Failed to pause recording";
       }
+      _recorderTimer?.cancel();
+      _timer?.cancel();
       _setRecorderState(RecorderState.paused);
     }
     notifyListeners();
@@ -261,6 +367,8 @@ class RecorderController extends ChangeNotifier {
     if (_recorderState.isRecording || _recorderState.isPaused) {
       final audioInfo = await AudioWaveformsInterface.instance.stop();
       _isRecording = false;
+      _timer?.cancel();
+      _recorderTimer?.cancel();
       if (audioInfo[Constants.resultDuration] != null) {
         final duration = audioInfo[Constants.resultDuration];
 
@@ -280,9 +388,10 @@ class RecorderController extends ChangeNotifier {
   /// Clears WaveData and labels from the list. This will effectively remove
   /// waves and labels from the UI.
   void reset() {
+    refresh();
     _waveData.clear();
     _shouldClearLabels = true;
-    refresh();
+    notifyListeners();
   }
 
   /// Sets [shouldClearLabels] flag to false.
@@ -293,8 +402,68 @@ class RecorderController extends ChangeNotifier {
     });
   }
 
-  void _updateOnNewAmplitude(double amplitude) {
-    _waveData.add(amplitude);
+  /// Gets decibels from native
+  Future<double?> _getDecibel() async =>
+      await AudioWaveformsInterface.instance.getDecibel();
+
+  /// Gets decibel by every defined frequency
+  void _startTimer() {
+    _recordedDuration = Duration.zero;
+    const duration = Duration(milliseconds: 50);
+    _recorderTimer = Timer.periodic(duration, (_) {
+      _elapsedDuration += duration;
+      _currentDurationController.add(elapsedDuration);
+    });
+
+    _timer = Timer.periodic(
+      updateFrequency,
+      (timer) async {
+        var db = await _getDecibel();
+        if (db == null) {
+          _recorderState = RecorderState.stopped;
+          throw "Failed to get sound level";
+        }
+        if (_useLegacyNormalization) {
+          _normaliseLegacy(db);
+        } else {
+          _normalise(db);
+        }
+        notifyListeners();
+      },
+    );
+  }
+
+  /// This is normalization is used before 1.0.0 release. From user
+  /// feedback we have brought it back util we find better way to normalise
+  /// db.
+  void _normaliseLegacy(double peak) {
+    if (Platform.isAndroid) {
+      waveData.add(peak - normalizationFactor);
+    } else {
+      if (peak == 0.0) {
+        waveData.add(0);
+      } else if (peak + normalizationFactor < 1) {
+        waveData.add(0);
+      } else {
+        waveData.add(peak + normalizationFactor);
+      }
+    }
+  }
+
+  /// Normalises the peak power for ios and peak amplitude for android
+  void _normalise(double peak) {
+    final absDb = peak.abs();
+    _maxPeak = max(absDb, _maxPeak);
+
+    // calculates min value
+    _currentMin = _waveData.fold(
+      0,
+      (previousValue, element) =>
+          element < previousValue ? element : previousValue,
+    );
+
+    final scaledWave = (absDb - _currentMin) / (_maxPeak - _currentMin);
+    _waveData.add(scaledWave);
     notifyListeners();
   }
 
@@ -334,10 +503,13 @@ class RecorderController extends ChangeNotifier {
   void dispose() async {
     if (recorderState != RecorderState.stopped) await stop();
     _currentScrolledDuration.dispose();
+    _currentDurationController.close();
     _recorderStateController.close();
     _recordedFileDurationController.close();
-    _amplitudeStreamSubscription?.cancel();
-    _currentDurationStreamSubscription?.cancel();
+    _recorderTimer?.cancel();
+    _timer?.cancel();
+    _timer = null;
+    _recorderTimer = null;
     _isDisposed = true;
     super.dispose();
   }

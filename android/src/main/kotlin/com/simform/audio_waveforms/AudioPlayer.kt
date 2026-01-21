@@ -38,10 +38,8 @@ class AudioPlayer(
             }
             val uri = Uri.parse(path)
             val mediaItem = MediaItem.fromUri(uri)
-            stop()
-            player?.clearMediaItems()
             player = ExoPlayer.Builder(appContext).build()
-            player?.setMediaItem(mediaItem)
+            player?.addMediaItem(mediaItem)
             player?.prepare()
             playerListener = object : Player.Listener {
 
@@ -184,28 +182,26 @@ class AudioPlayer(
 
     fun setFinishMode(result: MethodChannel.Result, releaseModeType: Int?) {
         try {
-            when (releaseModeType) {
-                0 -> {
-                    this.finishMode = FinishMode.Loop
-                }
+            releaseModeType?.let {
+                when (releaseModeType) {
+                    0 -> {
+                        this.finishMode = FinishMode.Loop
+                    }
 
-                1 -> {
-                    this.finishMode = FinishMode.Pause
-                }
+                    1 -> {
+                        this.finishMode = FinishMode.Pause
+                    }
 
-                2 -> {
-                    this.finishMode = FinishMode.Stop
-                }
+                    2 -> {
+                        this.finishMode = FinishMode.Stop
+                    }
 
-                null -> {
-                    throw Exception("Release mode is null")
-                }
-
-                else -> {
-                    throw Exception("Invalid Finish mode")
+                    else -> {
+                        throw Exception("Invalid Finish mode")
+                    }
                 }
             }
-            result.success(null)
+
         } catch (e: Exception) {
             result.error(Constants.LOG_TAG, "Can not set the release mode", e.toString())
         }

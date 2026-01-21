@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -9,15 +10,11 @@ import '../base/platform_streams.dart';
 import '../base/player_identifier.dart';
 
 part '../base/audio_waveforms_interface.dart';
-part 'waveform_extraction_controller.dart';
 
 class PlayerController extends ChangeNotifier {
-  PlayerController() {
-    if (!PlatformStreams.instance.isInitialised) {
-      PlatformStreams.instance.init();
-    }
-    PlatformStreams.instance.playerControllerFactory.addAll({playerKey: this});
-  }
+  final List<double> _waveformData = [];
+
+  List<double> get waveformData => _waveformData;
 
   PlayerState _playerState = PlayerState.stopped;
 
@@ -37,14 +34,6 @@ class PlayerController extends ChangeNotifier {
 
   /// An unique key string associated with [this] player only
   final playerKey = shortHash(UniqueKey());
-
-  /// An [WaveformExtractionController] instance which is bound
-  /// with [PlayerController]
-  /// using [playerKey] and [WaveformExtractionController._extractorKey]
-  ///
-  /// It can be used to extract waveform data, stop extraction
-  /// or listen to waveform data changed and progress.
-  late final waveformExtraction = WaveformExtractionController._(playerKey);
 
   final bool _shouldClearLabels = false;
 
@@ -90,9 +79,25 @@ class PlayerController extends ChangeNotifier {
   Stream<int> get onCurrentDurationChanged =>
       PlatformStreams.instance.onDurationChanged.filter(playerKey);
 
+  /// A stream to get current extracted waveform data. This stream will emit
+  /// list of doubles which are waveform data point.
+  Stream<List<double>> get onCurrentExtractedWaveformData =>
+      PlatformStreams.instance.onCurrentExtractedWaveformData.filter(playerKey);
+
+  /// A stream to get current progress of waveform extraction.
+  Stream<double> get onExtractionProgress =>
+      PlatformStreams.instance.onExtractionProgress.filter(playerKey);
+
   /// A stream to get events when audio is finished playing.
   Stream<void> get onCompletion =>
       PlatformStreams.instance.onCompletion.filter(playerKey);
+
+  PlayerController() {
+    if (!PlatformStreams.instance.isInitialised) {
+      PlatformStreams.instance.init();
+    }
+    PlatformStreams.instance.playerControllerFactory.addAll({playerKey: this});
+  }
 
   void _setPlayerState(PlayerState state) {
     _playerState = state;
@@ -122,39 +127,14 @@ class PlayerController extends ChangeNotifier {
   /// [noOfSamples] indicates no of extracted data points. This will determine
   /// number of bars in the waveform.
   ///
-  /// Defaults to 100 if both [noOfSamples] and [noOfSamplesPerSecond] are null.
-  ///
-  /// [noOfSamplesPerSecond] can be used as an alternative to [noOfSamples] to specify
-  /// the number of samples per second of audio. The actual [noOfSamples] will
-  /// be calculated as: noOfSamplesPerSecond * durationInSeconds.
-  /// This is useful when the full duration is not known in advance.
-  ///
-  /// **Important**: Provide only ONE of [noOfSamples] OR [noOfSamplesPerSecond], not both.
-  /// - To use fixed sample count: provide only [noOfSamples]
-  /// - To use samples per second: provide only [noOfSamplesPerSecond]
-  /// - If both are null, defaults to [noOfSamples] = 100
+  /// Defaults to 100.
   Future<void> preparePlayer({
     required String path,
     double? volume,
     bool shouldExtractWaveform = true,
-    int? noOfSamples,
-    int? noOfSamplesPerSecond,
+    int noOfSamples = 100,
   }) async {
-    // Validate that user doesn't provide both parameters
-    assert(
-      !(noOfSamples != null && noOfSamplesPerSecond != null),
-      'Cannot provide both noOfSamples and noOfSamplesPerSecond. '
-      'Use noOfSamples for fixed count OR noOfSamplesPerSecond for dynamic calculation based on duration.',
-    );
-
-    if (!path.startsWith('http')) {
-      // Keep the full URL for remote files and strip for local files
-      final uri = Uri.tryParse(path);
-      if (uri == null) {
-        throw ArgumentError('Invalid path format: $path');
-      }
-      path = uri.path;
-    }
+    path = Uri.parse(path).path;
     final isPrepared = await AudioWaveformsInterface.instance.preparePlayer(
       path: path,
       key: playerKey,
@@ -168,30 +148,12 @@ class PlayerController extends ChangeNotifier {
     }
 
     if (shouldExtractWaveform) {
-      // Determine which sampling strategy to use
-      final int actualNoOfSamples;
-      if (noOfSamplesPerSecond != null) {
-        // Use dynamic calculation based on duration
-        if (_maxDuration > 0) {
-          actualNoOfSamples =
-              (noOfSamplesPerSecond * (_maxDuration / 1000)).round();
-        } else {
-          actualNoOfSamples =
-              noOfSamplesPerSecond; // Fallback if duration unavailable
-        }
-      } else {
-        // Use fixed sample count (default to 100 if not provided)
-        actualNoOfSamples = noOfSamples ?? 100;
-      }
-
-      waveformExtraction
-          .extractWaveformData(
+      extractWaveformData(
         path: path,
-        noOfSamples: actualNoOfSamples,
-      )
-          .then(
+        noOfSamples: noOfSamples,
+      ).then(
         (value) {
-          waveformExtraction.waveformData
+          waveformData
             ..clear()
             ..addAll(value);
           notifyListeners();
@@ -199,6 +161,34 @@ class PlayerController extends ChangeNotifier {
       );
     }
     notifyListeners();
+  }
+
+  /// Extracts waveform data from provided audio file path.
+  /// [noOfSamples] indicates number of extracted data points. This will
+  /// determine number of bars in the waveform.
+  ///
+  /// This function will decode whole audio file and will calculate RMS
+  /// according to provided number of samples. So it may take a while to fully
+  /// decode audio file, specifically on android.
+  ///
+  /// For example, an audio file of 58 min and about 18 MB of size took about
+  /// 4 minutes to decode on android while the same file took about 6-7 seconds
+  /// on IOS.
+  ///
+  /// Providing less number if sample doesn't make a difference because it
+  /// still have to decode whole file.
+  ///
+  /// noOfSamples defaults to 100.
+  Future<List<double>> extractWaveformData({
+    required String path,
+    int noOfSamples = 100,
+  }) async {
+    final result = await AudioWaveformsInterface.instance.extractWaveformData(
+      key: playerKey,
+      path: path,
+      noOfSamples: noOfSamples,
+    );
+    return result;
   }
 
   /// A function to start the player to play/resume the audio.
@@ -316,7 +306,6 @@ class PlayerController extends ChangeNotifier {
   void dispose() async {
     if (playerState != PlayerState.stopped) await stopPlayer();
     await release();
-    await waveformExtraction.stopWaveformExtraction();
     PlatformStreams.instance.playerControllerFactory.remove(playerKey);
     if (PlatformStreams.instance.playerControllerFactory.isEmpty) {
       PlatformStreams.instance.dispose();

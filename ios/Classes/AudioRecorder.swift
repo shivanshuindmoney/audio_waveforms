@@ -7,16 +7,10 @@ public class AudioRecorder: NSObject, AVAudioRecorderDelegate{
     var useLegacyNormalization: Bool = false
     var audioUrl: URL?
     var recordedDuration: CMTime = CMTime.zero
-    var flutterChannel: FlutterMethodChannel
-    var bytesStreamEngine: RecorderBytesStreamEngine
-    init(channel: FlutterMethodChannel){
-        flutterChannel = channel
-        bytesStreamEngine = RecorderBytesStreamEngine(channel: channel)
-    }
-
+    
     func startRecording(_ result: @escaping FlutterResult,_ recordingSettings: RecordingSettings){
         useLegacyNormalization = recordingSettings.useLegacy ?? false
-
+        
         var settings: [String: Any] = [
                 AVFormatIDKey: getEncoder(recordingSettings.encoder ?? 0),
                 AVSampleRateKey: recordingSettings.sampleRate ?? 44100,
@@ -27,19 +21,19 @@ public class AudioRecorder: NSObject, AVAudioRecorderDelegate{
         if (recordingSettings.bitRate != nil) {
             settings[AVEncoderBitRateKey] = recordingSettings.bitRate
         }
-
+        
         if ((recordingSettings.encoder ?? 0) == Constants.kAudioFormatLinearPCM) {
             settings[AVLinearPCMBitDepthKey] = recordingSettings.linearPCMBitDepth
             settings[AVLinearPCMIsBigEndianKey] = recordingSettings.linearPCMIsBigEndian
             settings[AVLinearPCMIsFloatKey] = recordingSettings.linearPCMIsFloat
         }
-
+        
         let options: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .allowBluetooth]
         if (recordingSettings.path == nil) {
             let documentDirectory = getDocumentDirectory(result)
             let date = Date()
             let dateFormatter = DateFormatter()
-            dateFormatter.dateFormat = recordingSettings.fileNameFormat
+            dateFormatter.dateFormat = Constants.fileNameFormat
             let fileName = dateFormatter.string(from: date) + ".m4a"
             self.path = "\(documentDirectory)/\(fileName)"
         } else {
@@ -56,18 +50,12 @@ public class AudioRecorder: NSObject, AVAudioRecorderDelegate{
             
             if(audioUrl == nil){
                 result(FlutterError(code: Constants.audioWaveforms, message: "Failed to initialise file URL", details: nil))
-                return
             }
             audioRecorder = try AVAudioRecorder(url: audioUrl!, settings: settings as [String : Any])
             
             audioRecorder?.delegate = self
             audioRecorder?.isMeteringEnabled = true
             audioRecorder?.record()
-            bytesStreamEngine
-                .attach(
-                    result: result,
-                    sampleRate:  recordingSettings.sampleRate ?? Constants.defaultSampleRate
-                )
             result(true)
         } catch {
             result(FlutterError(code: Constants.audioWaveforms, message: "Failed to start recording", details: error.localizedDescription))
@@ -76,7 +64,6 @@ public class AudioRecorder: NSObject, AVAudioRecorderDelegate{
     
     public func stopRecording(_ result: @escaping FlutterResult) {
         audioRecorder?.stop()
-        bytesStreamEngine.detach()
         if(audioUrl != nil) {
             let asset = AVURLAsset(url:  audioUrl!)
             
@@ -109,13 +96,11 @@ public class AudioRecorder: NSObject, AVAudioRecorderDelegate{
     
     public func pauseRecording(_ result: @escaping FlutterResult) {
         audioRecorder?.pause()
-        bytesStreamEngine.togglePause()
         result(false)
     }
     
     public func resumeRecording(_ result: @escaping FlutterResult) {
         audioRecorder?.record()
-        bytesStreamEngine.togglePause();
         result(true)
     }
     
@@ -184,10 +169,8 @@ public class AudioRecorder: NSObject, AVAudioRecorderDelegate{
         let ifExists = FileManager.default.fileExists(atPath: directory)
         if(directory.isEmpty){
             result(FlutterError(code: Constants.audioWaveforms, message: "The document directory path is empty", details: nil))
-            return ""
         } else if(!ifExists) {
             result(FlutterError(code: Constants.audioWaveforms, message: "The document directory does't exists", details: nil))
-            return ""
         }
         return directory
     }
